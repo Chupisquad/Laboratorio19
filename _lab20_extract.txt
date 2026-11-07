@@ -1,0 +1,183 @@
+LABORATORIO 20
+PROYECTO INTEGRADOR
+Modernización Integral de una Aplicación Empresarial
+Semana 10 · Clase 10: Modernización de Aplicaciones (Estrategias de Migración, Strangler Pattern, Tendencias Cloud)
+2 de 2 — Cierre de la secuencia del Laboratorio 19 y de TODO el curso
+Integrantes del equipo (máx. 6):
+1.
+2.
+3.
+4.
+5.
+6.
+Fecha: _______________________
+🎓 Este es el cierre del curso completo
+Este laboratorio hace dos cosas: (1) técnicamente, completa la migración del Laboratorio 19 —extrayendo también el pago, dejando el monolito totalmente retirado— y agrega trazabilidad distribuida REAL entre procesos (a diferencia de la simulada del Laboratorio 7); (2) como Proyecto Integrador, pide un documento final que conecte esta arquitectura con TODO lo construido en los Laboratorios 1 a 18.
+Marco Teórico
+De trazas simuladas a trazas distribuidas reales
+En el Laboratorio 7, "order-service", "payment-service" e "inventory-service" eran tres archivos dentro del MISMO proceso de Node.js — una simplificación deliberada para enseñar el concepto de spans padre-hijo sin la complejidad de levantar varios servidores. En este laboratorio, esos tres "servicios" son TRES PROCESOS DE SISTEMA OPERATIVO DISTINTOS, comunicándose por HTTP real. La trazabilidad distribuida de verdad consiste en que el ID de traza viaje de un proceso a otro dentro de los encabezados HTTP (el estándar W3C Trace Context, encabezado "traceparent"), sin que el equipo tenga que programar esa propagación a mano — la auto-instrumentación de OpenTelemetry lo hace por ustedes.
+El curso completo, de un vistazo
+Clase
+Laboratorios
+Qué se construyó
+1-2: DevSecOps y calidad
+1-4
+Pipeline con seguridad (CodeQL/Trivy/Gitleaks/SBOM), calidad (SonarQube) y despliegue (Terraform)
+3: IaC avanzada
+5-6
+Módulos reutilizables de Terraform, workspaces multiambiente, estado remoto
+4: Observabilidad
+7-8
+OpenTelemetry, métricas y logs centralizados en CloudWatch, alarmas y dashboards
+5: Arquitecturas distribuidas
+9-10
+Eventos con EventBridge/SQS, CQRS con DynamoDB, patrón Saga con compensación
+6: Integración empresarial
+11-12
+API Gateway + Lambda, fan-out con SNS, comparación con Kafka
+7-8: Kubernetes
+13-16
+Clúster local, Deployments/Services/Ingress, HPA, self-healing, Helm
+9: FinOps
+17-18
+Cost Explorer, análisis de desperdicio, presupuestos, gobierno automatizado
+10: Modernización
+19-20
+Monolito → microservicios con Strangler Fig (este laboratorio)
+Objetivo del Laboratorio
+Completar la migración del Laboratorio 19 extrayendo también el procesamiento de pago (dejando el monolito totalmente retirado, sin recibir ninguna solicitud), agregar trazabilidad distribuida real entre los tres servicios independientes, y producir un documento final de arquitectura que conecte esta modernización con las técnicas de los 18 laboratorios anteriores.
+Requisitos previos
+Haber completado el Laboratorio 19: monolito, microservicio de inventario y fachada funcionando.
+Parte A · Extraer el pago a su propio microservicio
+mkdir -p payment-service
+cd payment-service
+npm init -y
+npm install express
+touch app.js
+cd ..
+payment-service/app.js
+const express = require('express');
+const app = express();
+app.use(express.json());
+app.post('/process-payment', (req, res) => {
+const { orderId, amount } = req.body;
+const approved = Math.random() > 0.05;
+if (!approved) {
+return res.status(402).json({ success: false, reason: 'pago rechazado', source: 'microservicio-pago' });
+}
+return res.status(201).json({ success: true, orderId, source: 'microservicio-pago' });
+});
+const PORT = process.env.PORT || 4002;
+app.listen(PORT, () => console.log(`Microservicio de pago escuchando en ${PORT}`));
+Parte B · Actualizar la fachada y retirar el monolito
+Se reemplaza facade/app.js completo. A partir de este punto, el inventario SIEMPRE se resuelve por el microservicio (esa parte de la migración ya quedó permanente desde el Laboratorio 19); lo nuevo es la bandera para el pago.
+facade/app.js (versión final)
+const express = require('express');
+const axios = require('axios');
+const app = express();
+app.use(express.json());
+const STRANGLE_PAYMENT = process.env.STRANGLE_PAYMENT === 'true';
+const INVENTORY_SERVICE_URL = process.env.INVENTORY_SERVICE_URL || 'http://localhost:4001';
+const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:4002';
+const MONOLITH_URL = process.env.MONOLITH_URL || 'http://localhost:4000';
+app.post('/checkout', async (req, res) => {
+const { orderId, productId, amount } = req.body;
+try {
+const invResp = await axios.get(`${INVENTORY_SERVICE_URL}/check-stock`, { params: { productId } });
+if (!invResp.data.inStock) {
+return res.status(409).json({ success: false, reason: 'sin stock', source: 'microservicio-inventario' });
+}
+if (STRANGLE_PAYMENT) {
+const payResp = await axios.post(`${PAYMENT_SERVICE_URL}/process-payment`, { orderId, amount });
+return res.status(payResp.status).json(payResp.data);
+} else {
+const payResp = await axios.post(`${MONOLITH_URL}/checkout-payment-only`, { orderId, amount });
+return res.status(payResp.status).json(payResp.data);
+}
+} catch (err) {
+if (err.response) return res.status(err.response.status).json(err.response.data);
+console.error(err);
+return res.status(500).json({ success: false, reason: 'error interno de la fachada' });
+}
+});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Fachada escuchando en ${PORT}, STRANGLE_PAYMENT=${STRANGLE_PAYMENT}`));
+Reinicien monolito, inventario, y levanten también el pago; luego la fachada con el pago YA estrangulado:
+Terminal 1
+node monolith/app.js
+Terminal 2
+node inventory-service/app.js
+Terminal 3
+node payment-service/app.js
+Terminal 4
+Desde la raiz
+set STRANGLE_PAYMENT=true
+set PORT=3000
+node facade/app.js
+Terminal 5Desde la raíz del repositorio, cree el archivo del pedido
+notepad pedido.json
+Peguen esta línea y guarden:
+{"orderId":"FINAL1","productId":"sku-1","amount":30}
+Envíen el pedido:
+curl -X POST http://localhost:3000/checkout -H "Content-Type: application/json" -d @pedido.json
+Verifiquen ustedes mismos: revisen la terminal del monolito (Terminal 1) después de varias solicitudes — no debe haber ninguna línea nueva de actividad, solo el mensaje de arranque.
+Parte C · Trazabilidad distribuida real entre los 3 servicios
+Instalen las dependencias de OpenTelemetry con auto-instrumentación HTTP en LOS 3 servicios (monolito, inventario, pago) y en la fachada:
+npm install @opentelemetry/sdk-node @opentelemetry/sdk-trace-node @opentelemetry/resources @opentelemetry/semantic-conventions @opentelemetry/auto-instrumentations-node @opentelemetry/api
+(Ejecuten ese comando dentro de monolith/, inventory-service/, payment-service/ y facade/ — cada carpeta tiene su propio node_modules.)
+tracing.js (idéntico en los 4 servicios, copien el mismo archivo en cada carpeta)
+const { NodeSDK } = require('@opentelemetry/sdk-node');
+const { ConsoleSpanExporter } = require('@opentelemetry/sdk-trace-node');
+const { resourceFromAttributes } = require('@opentelemetry/resources');
+const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+const serviceName = process.env.OTEL_SERVICE_NAME || 'unknown-service';
+const sdk = new NodeSDK({
+resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName }),
+traceExporter: new ConsoleSpanExporter(),
+instrumentations: [getNodeAutoInstrumentations()],
+});
+sdk.start();
+module.exports = sdk;
+Agreguen require('./tracing'); como la PRIMERA línea de cada app.js (monolith, inventory-service, payment-service, facade).
+Reinicien los 4 procesos, esta vez con OTEL_SERVICE_NAME distinto en cada uno:
+Cada uno de los siguientes comandos se deben ejecutar desde la raíz en sus respectivas terminales:
+Terminal 1, el monolito:
+set "OTEL_SERVICE_NAME=monolito"
+node monolith/app.js
+Terminal 2, el inventario:
+set "OTEL_SERVICE_NAME=inventario"
+node inventory-service/app.js
+Terminal 3, el pago:
+set "OTEL_SERVICE_NAME=pago"
+node payment-service/app.js
+Terminal 4, la fachada:
+set "OTEL_SERVICE_NAME=fachada"
+set "STRANGLE_PAYMENT=true"
+set "PORT=3000"
+node facade/app.js
+Terminal 5, el curl:
+curl -X POST http://localhost:3000/checkout -H "Content-Type: application/json" -d @pedido.json
+Esperen unos 10 segundos (recuerden el comportamiento del BatchSpanProcessor del Laboratorio 7) y revisen las terminales de la fachada, el inventario y el pago: cada una imprimió sus propios spans.
+Busquen la palabra "traceId" en la salida de la terminal del inventario y anoten el valor.
+Busquen la misma palabra en la terminal de la fachada.
+Confirmen que ambos valores son IDÉNTICOS, a pesar de ser dos procesos de sistema operativo completamente distintos.
+Parte D · Documento final de arquitectura (Proyecto Integrador)
+Esta es la entrega central del Proyecto Integrador: un documento breve (1-2 páginas) que responda, con sus propias palabras y basándose en lo que construyeron en el curso, lo siguiente:
+Arquitectura final: dibujen (a mano, en una herramienta de diagramas, o incluso en texto con cajas y flechas) los 3 microservicios y la fachada, mostrando cómo se comunican.
+Seguridad: si tuvieran que poner este sistema en producción, ¿qué job del pipeline de los Laboratorios 1-2 (CodeQL, Trivy, Gitleaks, SonarQube) aplicarían a CADA uno de los 3 microservicios? ¿Se necesitaría un pipeline por servicio, o uno compartido?
+Infraestructura: ¿cómo describirían cada microservicio como un módulo de Terraform (Laboratorio 5)? ¿Qué cambiaría entre un ambiente "dev" y uno "prod" (Laboratorio 6)?
+Observabilidad: ¿qué métricas de CloudWatch (Laboratorio 7-8) definirían para cada microservicio, y qué alarma dispararían si el microservicio de pago empezara a fallar más de lo normal?
+Empaquetado y despliegue: ¿cómo containerizarían cada microservicio (Laboratorio 13-14), y cómo lo desplegarían con Helm (Laboratorio 16) en "dev" y "prod" con réplicas distintas?
+Costos: si este sistema corriera en producción, ¿qué etiquetas (Laboratorio 17-18) le pondrían a cada microservicio para atribuir su costo correctamente al equipo responsable?
+Reflexión final: de las 10 clases del curso, ¿cuáles 2 conceptos consideran que tendrían el mayor impacto si tuvieran que modernizar un sistema real mañana mismo, y por qué?
+🎓 No es necesario volver a implementar todo
+Este documento es una síntesis escrita, no una nueva implementación completa. El objetivo es demostrar que entienden cómo se conectarían las piezas de los 18 laboratorios anteriores alrededor de esta arquitectura final — la misma decisión que tomaría un equipo real antes de escribir una sola línea de código de producción.
+Entregables (cierre del curso completo)
+Esto es lo único que se revisará de este laboratorio y del Proyecto Integrador:
+Código de payment-service/app.js y la versión final de facade/app.js.
+Captura de al menos 2 solicitudes con STRANGLE_PAYMENT=true, confirmando "source":"microservicio-pago" y CERO actividad nueva en el log del monolito.
+Captura de los logs de al menos 2 servicios distintos (ej. fachada e inventario) mostrando el MISMO traceId para una misma solicitud.
+El documento final de arquitectura (Parte D), respondiendo las 7 preguntas.
+🎉 Fin del curso
+Con este laboratorio se completan los 20 laboratorios y las 10 clases del curso. No hay limpieza de infraestructura pendiente en este laboratorio (todo corrió localmente, sin AWS ni Kubernetes) — solo cierren los procesos de Node.js con Ctrl+C en cada terminal.
